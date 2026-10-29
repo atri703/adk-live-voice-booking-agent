@@ -15,7 +15,7 @@ from google.adk.sessions import DatabaseSessionService
 from google.genai import types
 
 load_dotenv()
-from app.agent import root_agent  # noqa: E402
+from app.agent import root_agent
 
 APP_NAME = "voice_booking"
 session_service = DatabaseSessionService(
