@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>ADK Live Booking</title>
+<style>body{font:16px system-ui;max-width:760px;margin:3rem auto;padding:1rem;background:#101827;color:#f1f5f9}button{padding:12px 18px;margin:8px;border-radius:8px}pre{white-space:pre-wrap;background:#1e293b;padding:16px;max-height:300px;overflow:auto}</style>
+</head><body>
+<h1>Live Appointment Assistant</h1>
+<p>Speak naturally. Interrupt the assistant at any time. Reconnect with the same browser session to restore ADK history.</p>
+<button id="start">Connect microphone</button><button id="stop">Disconnect</button>
+<p id="status">Disconnected</p><pre id="log"></pre>
+<script type="module">
+const status=document.getElementById('status'), log=document.getElementById('log');
+const id=localStorage.getItem('booking_session')||crypto.randomUUID();
+localStorage.setItem('booking_session',id);
+const user=localStorage.getItem('booking_user')||crypto.randomUUID();
+localStorage.setItem('booking_user',user);
+let ws,stream,ctx,source,processor,playback,playAt=0;
+function write(s){log.textContent+=s+'\n';log.scrollTop=log.scrollHeight;}
+function stopAudio(){if(playback){playback.forEach(x=>{try{x.stop()}catch{}});playback=[];}playAt=0;}
+function play(base64){const raw=atob(base64),bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
+const pcm=new Int16Array(bytes.buffer),buffer=ctx.createBuffer(1,pcm.length,24000),ch=buffer.getChannelData(0);
+for(let i=0;i<pcm.length;i++)ch[i]=pcm[i]/32768;
+const node=ctx.createBufferSource();node.buffer=buffer;node.connect(ctx.destination);
+playAt=Math.max(playAt,ctx.currentTime+0.03);node.start(playAt);playAt+=buffer.duration;playback.push(node);}
+document.getElementById('start').onclick=async()=>{
+if(ws?.readyState===1)return;
+ctx=new AudioContext();await ctx.resume();playback=[];
+stream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true}});
+ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws/${user}/${id}`);
+ws.onopen=async()=>{
+status.textContent='Connected; listening';
+source=ctx.createMediaStreamSource(stream);processor=ctx.createScriptProcessor(4096,1,1);
+source.connect(processor);processor.connect(ctx.destination);
+processor.onaudioprocess=e=>{if(ws.readyState!==1)return;
+const input=e.inputBuffer.getChannelData(0),ratio=ctx.sampleRate/16000,out=new Int16Array(Math.ceil(input.length/ratio));
+for(let i=0;i<out.length;i++){const v=Math.max(-1,Math.min(1,input[Math.min(input.length-1,Math.floor(i*ratio))]));out[i]=v*32767;}
+ws.send(out.buffer);};};
+ws.onmessage=e=>{let event;try{event=JSON.parse(e.data)}catch{return}
+if(event.interrupted)stopAudio();
+for(const part of event.content?.parts||[]){if(part.inlineData?.mimeType?.startsWith('audio/pcm')&&part.inlineData.data)play(part.inlineData.data);}
+if(event.inputTranscription?.text)write('You: '+event.inputTranscription.text);
+if(event.outputTranscription?.text)write('Agent: '+event.outputTranscription.text);
+};
+ws.onclose=()=>{status.textContent='Disconnected';cleanup();};
+ws.onerror=()=>write('Connection error; verify API key and server logs');
+};
+function cleanup(){processor?.disconnect();source?.disconnect();stream?.getTracks().forEach(t=>t.stop());stopAudio();ctx?.close();}
+document.getElementById('stop').onclick=()=>{if(ws?.readyState===1)ws.send('audio_end');ws?.close();cleanup();status.textContent='Disconnected';};
+</script></body></html>
